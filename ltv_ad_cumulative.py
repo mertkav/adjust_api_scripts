@@ -1,91 +1,99 @@
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
-API_KEY = "hkQpRH8zxL7ZbWEmJyFP"
+from config import (
+    BASE_URL,
+    SERVICE_ACCOUNT_JSON,
+    PROJECT_ID,
+    DATASET_ID,
+    HEADERS,
+)
 
-# Google BigQuery Credentials 
-SERVICE_ACCOUNT_JSON = "/Users/mertkav/Documents/wixot/jsonkey-airflow/more-than-friends-69eca-b6f2ce7a19c5.json" 
-PROJECT_ID = "more-than-friends-69eca"  
-DATASET_ID = "adjust"
 TABLE_ID = "ltv_ad_cumulative"
 
-# Adjust API Base URL
-BASE_URL = "https://automate.adjust.com/reports-service/report"
+metrics = [
+    "lifetime_value_ad_d0",
+    "lifetime_value_ad_d1",
+    "lifetime_value_ad_d2",
+    "lifetime_value_ad_d3",
+    "lifetime_value_ad_d4",
+    "lifetime_value_ad_d5",
+    "lifetime_value_ad_d6",
+    "lifetime_value_ad_d7",
+    "lifetime_value_ad_d8",
+    "lifetime_value_ad_d14",
+    "lifetime_value_ad_d30",
+    "lifetime_value_ad_d45",
+    "lifetime_value_ad_d75",
+]
 
-# Define the date range
-end_date = datetime.today().strftime("%Y-%m-%d")
-start_date = (datetime.today() - timedelta(days=90)).strftime("%Y-%m-%d")
+dimensions = [
+    "day",
+    "os_name",
+    "country",
+    "store_id",
+    "app",
+    "currency_code",
+    "campaign",
+    "channel",
+]
 
-# Define required metrics
-metrics = ["lifetime_value_ad_d0","lifetime_value_ad_d1","lifetime_value_ad_d2","lifetime_value_ad_d3",
-           "lifetime_value_ad_d4","lifetime_value_ad_d5","lifetime_value_ad_d6","lifetime_value_ad_d7",
-           "lifetime_value_ad_d8","lifetime_value_ad_d14","lifetime_value_ad_d30","lifetime_value_ad_d45",
-           "lifetime_value_ad_d75"]
-
-# Dimensions
-dimensions = ["day","os_name", "country", "store_id", "app", "currency_code", "campaign", "channel"]
-
-# Parameters
 params = {
-    "date_period": f"{start_date}:{end_date}",
     "format": "json",
     "metrics": ",".join(metrics),
     "dimensions": ",".join(dimensions),
-    "store_id__in": "com.wixot.merge,1635526159"
+    "store_id__in": "com.wixot.merge,1635526159",
 }
 
-# Headers
-headers = {
-    "Authorization": f"Bearer {API_KEY}", 
-    "Content-Type": "application/json"
-}
 
-# API request
-response = requests.get(BASE_URL, headers=headers, params=params)
+def fetch_adjust_data() -> pd.DataFrame:
+    response = requests.get(BASE_URL, headers=HEADERS, params=params)
+    print("Status Code:", response.status_code)
+    print("Response Text (first 500 chars):", response.text[:500])
 
-print("Status Code:", response.status_code)
-print("Response Text (first 500 chars):", response.text[:500])  
+    if response.status_code != 200 or not response.text.strip():
+        raise ValueError("API request failed or returned an empty response.")
 
-if response.status_code == 200 and response.text.strip():
-    try:
-        data = response.json()  # Parse JSON response
+    data = response.json()
 
-        # Extract actual data from "rows" key
-        if "rows" in data and isinstance(data["rows"], list):
-            df = pd.DataFrame(data["rows"])
-            
-            # Convert total revenue metrics to float64
-            for metric in metrics:
-                df[metric] = pd.to_numeric(df[metric], errors='coerce').fillna(0).astype('float64')
+    if "rows" not in data or not isinstance(data["rows"], list):
+        raise ValueError("Unexpected API response format: 'rows' key missing or invalid.")
 
-            # Save loctotaly as CSV (Optional)
-            filename = "adjust_ltv_ad_cumulative.csv"
-            df.to_csv(filename, index=False)
-            print(f"\n✅ Data successfully fetched and saved as {filename}")
+    df = pd.DataFrame(data["rows"])
 
-            # Load Data into BigQuery
-            credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_JSON)
-            client = bigquery.Client(credentials=credentials, project=PROJECT_ID)
+    for metric in metrics:
+        df[metric] = pd.to_numeric(df[metric], errors="coerce").fillna(0).astype("float64")
 
-            table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
-
-            job_config = bigquery.LoadJobConfig(
-    write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE  # Overwrite previous data
-)
+    return df
 
 
-            client.load_table_from_dataframe(df, table_ref, job_config=job_config)
-            print(f"\n✅ Data successfully uploaded to BigQuery Table: {table_ref}")
+def upload_to_bigquery(df: pd.DataFrame) -> None:
+    credentials = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_JSON
+    )
+    client = bigquery.Client(credentials=credentials, project=PROJECT_ID)
 
-        else:
-            raise ValueError("Unexpected API response format: 'rows' key missing or invalid")
+    table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
 
-    except requests.exceptions.JSONDecodeError as e:
-        print("\n❌ JSON Decode Error:", e)
-    except ValueError as e:
-        print("\n❌ Value Error:", e)
-else:
-    print("\n❌ API request failed or returned an empty response.")
+    job_config = bigquery.LoadJobConfig(
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+    )
+
+    client.load_table_from_dataframe(df, table_ref, job_config=job_config)
+    print(f"\n✅ Data successfully uploaded to BigQuery Table: {table_ref}")
+
+
+def main() -> None:
+    df = fetch_adjust_data()
+
+    filename = "adjust_ltv_ad_cumulative.csv"
+    df.to_csv(filename, index=False)
+    print(f"\n✅ Data successfully fetched and saved as {filename}")
+
+    upload_to_bigquery(df)
+
+
+if __name__ == "__main__":
+    main()
